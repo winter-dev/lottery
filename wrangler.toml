@@ -1,0 +1,8 @@
+name = "weilihua-lucky-draw"
+compatibility_date = "2026-07-27"
+pages_build_output_dir = "dist"
+
+[[d1_databases]]
+binding = "lottery"
+database_name = "lottery"
+database_id = "x7504a3c3-1550-4004-a546-5596c50b719f"

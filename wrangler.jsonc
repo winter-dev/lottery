@@ -9,8 +9,8 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "weili-lucky-local",
-      "database_id": "00000000-0000-4000-8000-000000000001",
+      "database_name": "lottery",
+      "database_id": "7504a3c3-1550-4004-a546-5596c50b719f",
       "migrations_dir": "drizzle"
     }
   ],

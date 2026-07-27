@@ -256,7 +256,7 @@
           <div class="section-heading">
             <div>
               <h2 id="historyTitle">抽奖记录</h2>
-              <p>最近 9 次抽奖记录由 Cloudflare D1 持久化保存</p>
+              <p>最近 9 次抽奖记录已保存</p>
             </div>
           </div>
           <ul class="history-list" id="historyList"></ul>
@@ -502,13 +502,13 @@
         resizeWheel();
         drawButton.disabled = false;
         drawButton.textContent = "立即抽奖";
-        if (announce) showToast("D1 奖池已载入");
+        if (announce) showToast("奖池已载入");
       } catch (error) {
         console.error(error);
         configLoaded = false;
         drawButton.disabled = true;
         drawButton.textContent = "奖池载入失败";
-        showToast("无法读取 D1 奖池，请刷新页面重试");
+        showToast("无法读取奖池，请刷新页面重试");
       }
     }
   }
@@ -719,11 +719,11 @@
           <div>
             <p class="admin-config-kicker">PRIZE &amp; PROBABILITY</p>
             <h2>抽奖配置</h2>
-            <p>设置奖品名称、图片、权重与库存。点击保存后写入 Cloudflare D1，并立即供所有抽奖设备使用。</p>
+            <p>设置奖品名称、图片、权重与库存。点击保存后写入 D1，并立即供所有抽奖设备使用。</p>
           </div>
           <div class="admin-config-actions">
             <span class="save-state" id="saveState">正在读取 D1…</span>
-            <button class="btn btn-green" id="saveConfig" type="button">保存到 D1</button>
+            <button class="btn btn-green" id="saveConfig" type="button">保存</button>
             <button class="btn btn-gold" id="saveAndReturn" type="button">保存并返回抽奖</button>
           </div>
         </div>
@@ -920,7 +920,7 @@
         second: "2-digit",
         hour12: false,
       });
-      setConfigStatus(`已保存至 D1 · ${time}`);
+      setConfigStatus(`已保存 · ${time}`);
       showToast("抽奖配置已保存到 D1");
       return true;
     } catch (error) {

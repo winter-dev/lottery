@@ -69,7 +69,7 @@
     const refreshButton = document.querySelector("#refreshRecords");
     refreshButton.disabled = true;
     refreshButton.textContent = "载入中…";
-    document.querySelector("#recordsMeta").textContent = "正在读取 Cloudflare D1…";
+    document.querySelector("#recordsMeta").textContent = "正在读取数据...";
 
     try {
       const response = await fetch(`/api/admin/draws?${buildQuery()}`, {
