@@ -11,6 +11,7 @@
   let totalPages = 1;
   let currentRecords = [];
   let toastTimer = 0;
+  let recordsLoaded = false;
 
   function escapeHtml(value) {
     return String(value ?? "")
@@ -156,6 +157,27 @@
     URL.revokeObjectURL(url);
   }
 
+  function activePanelFromHash() {
+    return location.hash === "#records" ? "records" : "config";
+  }
+
+  function showAdminPanel(panelName, { updateHash = false } = {}) {
+    const selected = panelName === "records" ? "records" : "config";
+    document.querySelectorAll("[data-admin-panel]").forEach((panel) => {
+      panel.hidden = panel.dataset.adminPanel !== selected;
+    });
+    document.querySelectorAll("[data-admin-tab]").forEach((button) => {
+      const active = button.dataset.adminTab === selected;
+      button.setAttribute("aria-selected", String(active));
+      button.classList.toggle("is-active", active);
+    });
+    if (updateHash) history.replaceState(null, "", `#${selected}`);
+    if (selected === "records" && !recordsLoaded) {
+      recordsLoaded = true;
+      void loadRecords();
+    }
+  }
+
   document.querySelector("#recordFilters").addEventListener("submit", (event) => {
     event.preventDefault();
     currentPage = 1;
@@ -185,5 +207,19 @@
   });
 
   document.querySelector("#exportCsv").addEventListener("click", exportCsv);
-  void loadRecords();
+  document.querySelectorAll("[data-admin-tab]").forEach((button) => {
+    button.addEventListener("click", () => {
+      showAdminPanel(button.dataset.adminTab, { updateHash: true });
+    });
+  });
+  addEventListener("hashchange", () => {
+    showAdminPanel(activePanelFromHash());
+  });
+
+  const configRoot = document.querySelector("#configMount");
+  if (!globalThis.WeilihuaLotteryConfig?.mount(configRoot)) {
+    configRoot.innerHTML =
+      '<div class="surface admin-config-error">配置模块载入失败，请刷新页面重试。</div>';
+  }
+  showAdminPanel(activePanelFromHash(), { updateHash: !location.hash });
 })();

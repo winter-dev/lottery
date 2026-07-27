@@ -16,6 +16,17 @@ const htmlSecurityHeaders = {
     "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
 };
 
+const DEFAULT_PRIZES = [
+  { id: "default-first", name: "一等奖", emoji: "🏆", weight: 2, stock: 1 },
+  { id: "default-second", name: "二等奖", emoji: "🎁", weight: 5, stock: 2 },
+  { id: "default-third", name: "三等奖", emoji: "🎊", weight: 8, stock: 3 },
+  { id: "default-red-packet", name: "现金红包", emoji: "🧧", weight: 10, stock: 5 },
+  { id: "default-coupon", name: "优惠券", emoji: "🎟️", weight: 14, stock: 8 },
+  { id: "default-points", name: "积分 × 100", emoji: "⭐", weight: 18, stock: 12 },
+  { id: "default-again", name: "再来一次", emoji: "🔁", weight: 20, stock: 99 },
+  { id: "default-thanks", name: "谢谢参与", emoji: "🍀", weight: 23, stock: 99 },
+];
+
 function decodeBase64(value) {
   const decoded = atob(value);
   const bytes = new Uint8Array(decoded.length);
@@ -124,6 +135,49 @@ function validateDrawRecord(value) {
   };
 }
 
+function safeConfigImage(value) {
+  if (value === "" || value === null || value === undefined) return "";
+  if (typeof value !== "string" || value.length > 300_000) return null;
+  return /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(value)
+    ? value
+    : null;
+}
+
+function validateLotteryConfig(value) {
+  if (!value || typeof value !== "object" || !Array.isArray(value.prizes)) return null;
+  if (value.prizes.length < 2 || value.prizes.length > 12) return null;
+
+  const ids = new Set();
+  const prizes = [];
+  for (let index = 0; index < value.prizes.length; index += 1) {
+    const raw = value.prizes[index];
+    if (!raw || typeof raw !== "object") return null;
+    const id = stringWithin(raw.id, 80);
+    const name = stringWithin(raw.name, 24);
+    const emoji = stringWithin(raw.emoji || "🎁", 8);
+    const image = safeConfigImage(raw.image);
+    const weight = integerInRange(raw.weight, 0, 9_999);
+    const stock = integerInRange(raw.stock, 0, 9_999);
+    const initialStock = integerInRange(raw.initialStock ?? raw.stock, 0, 9_999);
+    if (
+      !id ||
+      !/^[A-Za-z0-9-]+$/.test(id) ||
+      ids.has(id) ||
+      !name ||
+      !emoji ||
+      image === null ||
+      weight === null ||
+      stock === null ||
+      initialStock === null
+    ) {
+      return null;
+    }
+    ids.add(id);
+    prizes.push({ id, name, emoji, image, weight, stock, initialStock, sortOrder: index });
+  }
+  return prizes;
+}
+
 async function initializeSchema(database) {
   await database.batch([
     database.prepare(`
@@ -150,6 +204,32 @@ async function initializeSchema(database) {
     database.prepare(
       "CREATE INDEX IF NOT EXISTS draw_records_mode_drawn_at_idx ON draw_records (draw_mode, drawn_at DESC)"
     ),
+    database.prepare(`
+      CREATE TABLE IF NOT EXISTS lottery_settings (
+        id INTEGER PRIMARY KEY NOT NULL CHECK (id = 1),
+        revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+        updated_at INTEGER NOT NULL
+      ) STRICT
+    `),
+    database.prepare(
+      "INSERT OR IGNORE INTO lottery_settings (id, revision, updated_at) VALUES (1, 1, 0)"
+    ),
+    database.prepare(`
+      CREATE TABLE IF NOT EXISTS lottery_prizes (
+        id TEXT PRIMARY KEY NOT NULL,
+        sort_order INTEGER NOT NULL UNIQUE CHECK (sort_order >= 0),
+        name TEXT NOT NULL,
+        emoji TEXT NOT NULL DEFAULT '🎁',
+        image TEXT NOT NULL DEFAULT '',
+        weight INTEGER NOT NULL DEFAULT 0 CHECK (weight >= 0),
+        stock INTEGER NOT NULL DEFAULT 0 CHECK (stock >= 0),
+        initial_stock INTEGER NOT NULL DEFAULT 0 CHECK (initial_stock >= 0),
+        updated_at INTEGER NOT NULL
+      ) STRICT
+    `),
+    database.prepare(
+      "CREATE INDEX IF NOT EXISTS lottery_prizes_sort_order_idx ON lottery_prizes (sort_order)"
+    ),
   ]);
 }
 
@@ -164,14 +244,132 @@ async function withSchemaRetry(database, operation) {
   }
 }
 
-async function createDrawRecord(request, env, url) {
+function publicPrize(row) {
+  return {
+    id: String(row.id),
+    name: String(row.name),
+    emoji: String(row.emoji || "🎁"),
+    image: String(row.image || ""),
+    weight: Number(row.weight || 0),
+    stock: Number(row.stock || 0),
+    initialStock: Number(row.initial_stock || 0),
+  };
+}
+
+async function ensureLotteryConfig(database) {
+  const count = await withSchemaRetry(database, () =>
+    database.prepare("SELECT COUNT(*) AS total FROM lottery_prizes").first()
+  );
+  if (Number(count?.total || 0) > 0) return;
+
+  const now = Date.now();
+  await database.batch([
+    database.prepare(
+      "INSERT OR IGNORE INTO lottery_settings (id, revision, updated_at) VALUES (1, 1, ?)"
+    ).bind(now),
+    ...DEFAULT_PRIZES.map((prize, index) =>
+      database.prepare(`
+        INSERT OR IGNORE INTO lottery_prizes (
+          id, sort_order, name, emoji, image, weight, stock, initial_stock, updated_at
+        ) VALUES (?, ?, ?, ?, '', ?, ?, ?, ?)
+      `).bind(
+        prize.id,
+        index,
+        prize.name,
+        prize.emoji,
+        prize.weight,
+        prize.stock,
+        prize.stock,
+        now
+      )
+    ),
+  ]);
+}
+
+async function readLotteryConfig(database, { includeRecords = false } = {}) {
+  await ensureLotteryConfig(database);
+  const statements = [
+    database.prepare("SELECT revision, updated_at FROM lottery_settings WHERE id = 1"),
+    database.prepare(`
+      SELECT id, sort_order, name, emoji, image, weight, stock, initial_stock
+      FROM lottery_prizes
+      ORDER BY sort_order ASC
+    `),
+  ];
+  if (includeRecords) {
+    statements.push(
+      database.prepare("SELECT COUNT(*) AS total FROM draw_records"),
+      database.prepare(`
+        SELECT
+          r.id, r.prize_id, r.prize_name, r.prize_emoji, r.draw_mode,
+          r.draw_no, r.weight, r.stock_after, r.drawn_at, r.client_timezone,
+          COALESCE(p.image, '') AS prize_image
+        FROM draw_records AS r
+        LEFT JOIN lottery_prizes AS p ON p.id = r.prize_id
+        ORDER BY r.drawn_at DESC, r.received_at DESC
+        LIMIT 9
+      `)
+    );
+  }
+
+  const results = await database.batch(statements);
+  const settings = results[0].results?.[0] || {};
+  const config = {
+    revision: Number(settings.revision || 1),
+    updatedAt: Number(settings.updated_at || 0),
+    prizes: (results[1].results || []).map(publicPrize),
+  };
+  if (!includeRecords) return config;
+
+  return {
+    ...config,
+    drawCount: Number(results[2].results?.[0]?.total || 0),
+    history: (results[3].results || []).map((row) => ({
+      id: String(row.id),
+      prizeId: row.prize_id ? String(row.prize_id) : "",
+      name: String(row.prize_name),
+      emoji: String(row.prize_emoji || "🎁"),
+      image: String(row.prize_image || ""),
+      createdAt: Number(row.drawn_at),
+      drawNo: Number(row.draw_no),
+      mode: row.draw_mode === "stock" ? "stock" : "infinite",
+      weight: Number(row.weight || 0),
+      stockAfter: Number(row.stock_after || 0),
+      timezone: String(row.client_timezone || ""),
+      synced: true,
+    })),
+  };
+}
+
+async function getLotteryConfig(request, env) {
   if (!env.DB) return jsonResponse({ error: "Database binding unavailable" }, { status: 503 });
+  if (request.method !== "GET") {
+    return jsonResponse({ error: "Method not allowed" }, {
+      status: 405,
+      headers: { Allow: "GET" },
+    });
+  }
+  return jsonResponse(await readLotteryConfig(env.DB, { includeRecords: true }));
+}
+
+async function saveLotteryConfig(request, env, url) {
+  if (!env.DB) return jsonResponse({ error: "Database binding unavailable" }, { status: 503 });
+  if (request.method === "GET") {
+    return jsonResponse(await readLotteryConfig(env.DB, { includeRecords: true }));
+  }
+  if (request.method !== "PUT") {
+    return jsonResponse({ error: "Method not allowed" }, {
+      status: 405,
+      headers: { Allow: "GET, PUT" },
+    });
+  }
+
   const origin = request.headers.get("Origin");
   if (origin && origin !== url.origin) {
     return jsonResponse({ error: "Cross-origin request rejected" }, { status: 403 });
   }
   const contentLength = Number(request.headers.get("Content-Length") || 0);
-  if (contentLength > 16_384) {
+  if (contentLength > 4_000_000) {
     return jsonResponse({ error: "Request body too large" }, { status: 413 });
   }
 
@@ -181,44 +379,160 @@ async function createDrawRecord(request, env, url) {
   } catch {
     return jsonResponse({ error: "Invalid JSON body" }, { status: 400 });
   }
+  const prizes = validateLotteryConfig(body);
+  if (!prizes) return jsonResponse({ error: "Invalid lottery configuration" }, { status: 400 });
 
-  const record = validateDrawRecord(body);
-  if (!record) return jsonResponse({ error: "Invalid draw record" }, { status: 400 });
-
-  const insert = () =>
-    env.DB.prepare(`
-      INSERT OR IGNORE INTO draw_records (
-        id, prize_id, prize_name, prize_emoji, draw_mode, draw_no,
-        weight, stock_after, drawn_at, client_timezone, received_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `)
-      .bind(
-        record.id,
-        record.prizeId,
-        record.prizeName,
-        record.prizeEmoji,
-        record.mode,
-        record.drawNo,
-        record.weight,
-        record.stockAfter,
-        record.drawnAt,
-        record.timezone,
-        Date.now()
+  await ensureLotteryConfig(env.DB);
+  const now = Date.now();
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM lottery_prizes"),
+    ...prizes.map((prize) =>
+      env.DB.prepare(`
+        INSERT INTO lottery_prizes (
+          id, sort_order, name, emoji, image, weight, stock, initial_stock, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        prize.id,
+        prize.sortOrder,
+        prize.name,
+        prize.emoji,
+        prize.image,
+        prize.weight,
+        prize.stock,
+        prize.initialStock,
+        now
       )
-      .run();
+    ),
+    env.DB.prepare(`
+      UPDATE lottery_settings
+      SET revision = revision + 1, updated_at = ?
+      WHERE id = 1
+    `).bind(now),
+  ]);
 
-  const result = await withSchemaRetry(env.DB, insert);
-  console.log(
-    JSON.stringify({
-      message: "draw_record_saved",
-      id: record.id,
-      inserted: Number(result.meta?.changes || 0) > 0,
-    })
-  );
-  return jsonResponse(
-    { id: record.id, stored: true },
-    { status: Number(result.meta?.changes || 0) > 0 ? 201 : 200 }
-  );
+  console.log(JSON.stringify({ message: "lottery_config_saved", prizes: prizes.length }));
+  return jsonResponse(await readLotteryConfig(env.DB, { includeRecords: true }));
+}
+
+function secureRandomUnit() {
+  const value = new Uint32Array(1);
+  crypto.getRandomValues(value);
+  return value[0] / 4_294_967_296;
+}
+
+function pickWeightedPrize(prizes) {
+  const total = prizes.reduce((sum, prize) => sum + prize.weight, 0);
+  if (!prizes.length || total <= 0) return null;
+  let cursor = secureRandomUnit() * total;
+  for (const prize of prizes) {
+    cursor -= prize.weight;
+    if (cursor < 0) return prize;
+  }
+  return prizes.at(-1) || null;
+}
+
+async function createDrawRecord(request, env, url) {
+  if (!env.DB) return jsonResponse({ error: "Database binding unavailable" }, { status: 503 });
+  const origin = request.headers.get("Origin");
+  if (origin && origin !== url.origin) {
+    return jsonResponse({ error: "Cross-origin request rejected" }, { status: 403 });
+  }
+  const contentLength = Number(request.headers.get("Content-Length") || 0);
+  if (contentLength > 4_096) {
+    return jsonResponse({ error: "Request body too large" }, { status: 413 });
+  }
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse({ error: "Invalid JSON body" }, { status: 400 });
+  }
+  const mode = body?.mode === "stock" || body?.mode === "infinite" ? body.mode : null;
+  const timezone = stringWithin(body?.timezone || "", 64, { allowEmpty: true });
+  if (!mode || timezone === null) {
+    return jsonResponse({ error: "Invalid draw request" }, { status: 400 });
+  }
+
+  let selected = null;
+  let stockAfter = 0;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const config = await readLotteryConfig(env.DB);
+    const pool = config.prizes.filter(
+      (prize) => prize.weight > 0 && (mode === "infinite" || prize.stock > 0)
+    );
+    selected = pickWeightedPrize(pool);
+    if (!selected) {
+      return jsonResponse({ error: "No eligible prizes", code: "EMPTY_POOL" }, { status: 409 });
+    }
+    stockAfter = selected.stock;
+    if (mode === "infinite") break;
+
+    const update = await env.DB.prepare(`
+      UPDATE lottery_prizes
+      SET stock = stock - 1, updated_at = ?
+      WHERE id = ? AND stock > 0
+    `).bind(Date.now(), selected.id).run();
+    if (Number(update.meta?.changes || 0) > 0) {
+      stockAfter = Math.max(0, selected.stock - 1);
+      await env.DB.prepare(`
+        UPDATE lottery_settings
+        SET revision = revision + 1, updated_at = ?
+        WHERE id = 1
+      `).bind(Date.now()).run();
+      break;
+    }
+    selected = null;
+  }
+
+  if (!selected) {
+    return jsonResponse({ error: "Prize inventory changed, please retry" }, { status: 409 });
+  }
+
+  const count = await env.DB.prepare("SELECT COUNT(*) AS total FROM draw_records").first();
+  const drawNo = Number(count?.total || 0) + 1;
+  const drawnAt = Date.now();
+  const id = crypto.randomUUID();
+  await env.DB.prepare(`
+    INSERT INTO draw_records (
+      id, prize_id, prize_name, prize_emoji, draw_mode, draw_no,
+      weight, stock_after, drawn_at, client_timezone, received_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).bind(
+    id,
+    selected.id,
+    selected.name,
+    selected.emoji,
+    mode,
+    drawNo,
+    selected.weight,
+    stockAfter,
+    drawnAt,
+    timezone,
+    drawnAt
+  ).run();
+
+  console.log(JSON.stringify({ message: "draw_record_saved", id, prizeId: selected.id }));
+  const config = await readLotteryConfig(env.DB);
+  return jsonResponse({
+    stored: true,
+    config,
+    prize: { ...selected, stock: stockAfter },
+    record: {
+      id,
+      prizeId: selected.id,
+      name: selected.name,
+      emoji: selected.emoji,
+      image: selected.image,
+      createdAt: drawnAt,
+      drawNo,
+      mode,
+      weight: selected.weight,
+      stockAfter,
+      timezone,
+      synced: true,
+    },
+  }, { status: 201 });
 }
 
 function utf8Base64(value) {
@@ -383,6 +697,10 @@ async function handleRequest(request, env) {
     return jsonResponse({ ok: true, database: Boolean(env.DB) });
   }
 
+  if (pathname === "/api/config") {
+    return await getLotteryConfig(request, env);
+  }
+
   if (pathname === "/api/draws") {
     if (request.method !== "POST") {
       return jsonResponse({ error: "Method not allowed" }, {
@@ -395,11 +713,30 @@ async function handleRequest(request, env) {
 
   const isAdminPage =
     pathname === "/admin" || pathname === "/admin/" || pathname === "/admin/index.html";
+  const isLegacyConfigPage =
+    pathname === "/config" || pathname === "/config/" || pathname === "/config/index.html";
   const isAdminApi = pathname.startsWith("/api/admin/");
-  if (isAdminPage || isAdminApi) {
+  if (isAdminPage || isLegacyConfigPage || isAdminApi) {
     const auth = await checkAdminAuthorization(request, env);
     if (!auth.authorized) return adminAuthFailure(auth.configured, isAdminApi);
+    if (isLegacyConfigPage) {
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        return new Response("Method Not Allowed", {
+          status: 405,
+          headers: { ...securityHeaders, Allow: "GET, HEAD" },
+        });
+      }
+      return new Response(null, {
+        status: 302,
+        headers: {
+          ...securityHeaders,
+          "Cache-Control": "no-store",
+          Location: "/admin#config",
+        },
+      });
+    }
     if (isAdminApi) {
+      if (pathname === "/api/admin/config") return await saveLotteryConfig(request, env, url);
       if (pathname === "/api/admin/draws") return await listDrawRecords(request, env, url);
       return jsonResponse({ error: "Not found" }, { status: 404 });
     }

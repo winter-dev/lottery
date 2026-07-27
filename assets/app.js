@@ -1,10 +1,9 @@
 (() => {
   "use strict";
 
-  const STORAGE_KEY = "weilihua.luckyDraw.v2";
   const MAX_PRIZES = 12;
   const MIN_PRIZES = 2;
-  const MAX_HISTORY = 50;
+  const MAX_HISTORY = 9;
   const TAU = Math.PI * 2;
 
   const uid = () =>
@@ -34,6 +33,8 @@
       })),
       history: [],
       drawCount: 0,
+      historyCount: 0,
+      revision: 0,
       updatedAt: Date.now(),
     };
   }
@@ -63,54 +64,37 @@
     };
   }
 
-  function normalizeState(raw) {
-    const fallback = createDefaultState();
-    if (!raw || typeof raw !== "object") return fallback;
-
-    const incomingPrizes = Array.isArray(raw.prizes) ? raw.prizes : [];
-    const prizes = incomingPrizes
-      .slice(0, MAX_PRIZES)
-      .map(normalizePrize);
-
-    if (prizes.length < MIN_PRIZES) return fallback;
-
-    const history = Array.isArray(raw.history)
-      ? raw.history.slice(0, MAX_HISTORY).map((item) => ({
-          id: typeof item?.id === "string" ? item.id : uid(),
-          name: typeof item?.name === "string" ? item.name.slice(0, 24) : "未命名奖品",
-          emoji: typeof item?.emoji === "string" ? item.emoji.slice(0, 8) : "🎁",
-          image: safeImage(item?.image),
-          createdAt: Number(item?.createdAt) || Date.now(),
-          drawNo: safeNumber(item?.drawNo, 0),
-          mode: item?.mode === "stock" ? "stock" : "infinite",
-          prizeId: typeof item?.prizeId === "string" ? item.prizeId : "",
-          weight: safeNumber(item?.weight, 0),
-          stockAfter: safeNumber(item?.stockAfter, 0),
-          timezone: typeof item?.timezone === "string" ? item.timezone.slice(0, 64) : "",
-          synced: item?.synced === true,
-        }))
-      : [];
-
+  function normalizeHistoryItem(item) {
     return {
-      version: 2,
-      mode: raw.mode === "stock" ? "stock" : "infinite",
-      prizes,
-      history,
-      drawCount: safeNumber(raw.drawCount, history.length),
-      updatedAt: Number(raw.updatedAt) || Date.now(),
+      id: typeof item?.id === "string" ? item.id : uid(),
+      name: typeof item?.name === "string" ? item.name.slice(0, 24) : "未命名奖品",
+      emoji: typeof item?.emoji === "string" ? item.emoji.slice(0, 8) : "🎁",
+      image: safeImage(item?.image),
+      createdAt: Number(item?.createdAt) || Date.now(),
+      drawNo: safeNumber(item?.drawNo, 0),
+      mode: item?.mode === "stock" ? "stock" : "infinite",
+      prizeId: typeof item?.prizeId === "string" ? item.prizeId : "",
+      weight: safeNumber(item?.weight, 0),
+      stockAfter: safeNumber(item?.stockAfter, 0),
+      timezone: typeof item?.timezone === "string" ? item.timezone.slice(0, 64) : "",
+      synced: true,
     };
   }
 
-  function loadState() {
-    try {
-      const stored = localStorage.getItem(STORAGE_KEY);
-      return stored ? normalizeState(JSON.parse(stored)) : createDefaultState();
-    } catch {
-      return createDefaultState();
+  function applyRemoteState(raw, { includeHistory = true } = {}) {
+    const incomingPrizes = Array.isArray(raw?.prizes) ? raw.prizes : [];
+    const prizes = incomingPrizes.slice(0, MAX_PRIZES).map(normalizePrize);
+    if (prizes.length >= MIN_PRIZES) state.prizes = prizes;
+    state.revision = safeNumber(raw?.revision, state.revision);
+    state.updatedAt = Number(raw?.updatedAt) || state.updatedAt;
+    state.drawCount = safeNumber(raw?.drawCount, state.drawCount);
+    state.historyCount = state.drawCount;
+    if (includeHistory && Array.isArray(raw?.history)) {
+      state.history = raw.history.slice(0, MAX_HISTORY).map(normalizeHistoryItem);
     }
   }
 
-  let state = loadState();
+  let state = createDefaultState();
   let spinning = false;
   let spinFrame = 0;
   let confettiFrame = 0;
@@ -119,21 +103,11 @@
   let resizeObserver = null;
   let resizeHandler = null;
   let toastTimer = 0;
-  let syncingRecords = false;
+  let configLoaded = false;
+  let configDirty = false;
+  let configSaving = false;
   const imageCache = new Map();
   const app = document.querySelector("#app");
-
-  function saveState({ quiet = false } = {}) {
-    state.updatedAt = Date.now();
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-      if (!quiet) markSaved();
-      return true;
-    } catch {
-      showToast("保存失败：图片可能过大，请更换较小的图片");
-      return false;
-    }
-  }
 
   function escapeHtml(value) {
     return String(value ?? "")
@@ -153,36 +127,38 @@
   }
 
   function routeName() {
-    if (location.hash === "#/config") return "config";
-    return /\/config(?:\/|\/index\.html)?$/.test(location.pathname) ? "config" : "draw";
+    return "draw";
   }
 
   function isFileRoute() {
     return location.protocol === "file:";
   }
 
-  function routeHref(route) {
-    if (!isFileRoute()) return route === "config" ? "/config" : "/";
-    const inConfig = /[\\/]config[\\/]/.test(location.pathname);
-    if (route === "config") return inConfig ? "./index.html" : "./config/index.html";
-    return inConfig ? "../index.html" : "./index.html";
+  function routeHref() {
+    if (!isFileRoute()) return "/";
+    const inNestedPage = /[\\/](?:admin|config)[\\/]/.test(location.pathname);
+    return inNestedPage ? "../index.html" : "./index.html";
   }
 
   function adminHref() {
     if (!isFileRoute()) return "/admin";
-    const inConfig = /[\\/]config[\\/]/.test(location.pathname);
-    return inConfig ? "../admin/index.html" : "./admin/index.html";
+    const inAdmin = /[\\/]admin[\\/]/.test(location.pathname);
+    return inAdmin ? "./index.html" : "./admin/index.html";
   }
 
   function assetUrl(filename) {
     if (!isFileRoute()) return `/${filename}`;
-    const inConfig = /[\\/]config[\\/]/.test(location.pathname);
-    return `${inConfig ? "../" : "./"}${filename}`;
+    const inNestedPage = /[\\/](?:admin|config)[\\/]/.test(location.pathname);
+    return `${inNestedPage ? "../" : "./"}${filename}`;
   }
 
   function navigate(route) {
     if (spinning) {
-      showToast("本轮抽奖结束后再进入配置");
+      showToast("本轮抽奖结束后再离开页面");
+      return;
+    }
+    if (!app) {
+      location.href = routeHref(route);
       return;
     }
     if (isFileRoute()) {
@@ -225,14 +201,13 @@
   }
 
   function renderRoute() {
+    if (!app) return;
     cleanupView();
-    const route = routeName();
-    document.title =
-      route === "config" ? "抽奖配置 · 威利华木" : "威利华木 · 幸运抽奖";
+    document.title = "威利华木 · 幸运抽奖";
     app.innerHTML = `
       <div class="app-shell">
         ${brandHeader()}
-        ${route === "config" ? configTemplate() : drawTemplate()}
+        ${drawTemplate()}
         <footer class="site-footer">WEILIHUAMU · 幸运由心，美好常在</footer>
       </div>
       ${globalLayers()}`;
@@ -245,8 +220,7 @@
       });
     });
 
-    if (route === "config") initConfigView();
-    else initDrawView();
+    initDrawView();
   }
 
   function drawTemplate() {
@@ -258,9 +232,6 @@
             <button type="button" data-mode="stock">库存模式</button>
           </div>
           <div class="stock-chip" id="stockChip"><span>可抽数量</span><b>∞</b></div>
-          <a class="btn btn-outline config-link" href="${routeHref("config")}" data-route="config">
-            <span aria-hidden="true">⚙</span> 抽奖配置
-          </a>
           <a class="btn btn-outline admin-link" href="${adminHref()}">
             <span aria-hidden="true">🔐</span> 管理后台
           </a>
@@ -285,9 +256,8 @@
           <div class="section-heading">
             <div>
               <h2 id="historyTitle">抽奖记录</h2>
-              <p>最近 50 次保存在当前设备，并自动同步至 Cloudflare D1</p>
+              <p>最近 9 次抽奖记录由 Cloudflare D1 持久化保存</p>
             </div>
-            <button class="btn btn-text btn-danger" id="clearHistory" type="button">清空记录</button>
           </div>
           <ul class="history-list" id="historyList"></ul>
         </section>
@@ -358,17 +328,8 @@
       if (!button || spinning || button.dataset.mode === state.mode) return;
       state.mode = button.dataset.mode;
       highlightedPrize = -1;
-      saveState({ quiet: true });
       updateDrawControls();
       drawWheel(context, Math.floor(canvas.clientWidth));
-    });
-
-    document.querySelector("#clearHistory").addEventListener("click", () => {
-      if (!state.history.length) return;
-      state.history = [];
-      saveState({ quiet: true });
-      renderHistory();
-      showToast("抽奖记录已清空");
     });
 
     const modal = document.querySelector("#resultModal");
@@ -403,22 +364,67 @@
       cleanupView = oldCleanup;
     };
 
-    function startDraw() {
-      if (spinning) return;
-      const selectedIndex = weightedPick();
-      if (selectedIndex < 0) {
-        showToast(
-          state.mode === "stock"
-            ? "可抽库存已用完，请前往配置页重置库存"
-            : "请先为至少一个奖品设置有效权重"
-        );
-        return;
-      }
-
+    async function startDraw() {
+      if (spinning || !configLoaded) return;
       spinning = true;
       highlightedPrize = -1;
       frame.classList.add("spinning");
       drawButton.disabled = true;
+      drawButton.textContent = "正在确认奖池…";
+
+      let drawResult;
+      try {
+        const response = await fetch("/api/draws", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          body: JSON.stringify({
+            mode: state.mode,
+            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "",
+          }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          if (response.status === 409) {
+            showToast(
+              state.mode === "stock"
+                ? "可抽库存已用完，请前往管理后台重置库存"
+                : "请前往管理后台设置有效奖品权重"
+            );
+            await loadPublicLotteryState({ announce: false });
+            return;
+          }
+          throw new Error(data.error || `HTTP ${response.status}`);
+        }
+        drawResult = data;
+        if (data.config) applyRemoteState(data.config, { includeHistory: false });
+      } catch (error) {
+        console.error(error);
+        showToast("无法连接 D1 奖池，请稍后重试");
+        return;
+      } finally {
+        if (!drawResult) {
+          spinning = false;
+          frame.classList.remove("spinning");
+          drawButton.disabled = !configLoaded;
+          drawButton.textContent = "立即抽奖";
+        }
+      }
+
+      const selectedIndex = state.prizes.findIndex(
+        (prize) => prize.id === drawResult?.prize?.id
+      );
+      if (selectedIndex < 0) {
+        spinning = false;
+        frame.classList.remove("spinning");
+        drawButton.disabled = false;
+        drawButton.textContent = "立即抽奖";
+        showToast("奖池刚刚发生变化，请重新抽取");
+        await loadPublicLotteryState({ announce: false });
+        return;
+      }
       drawButton.textContent = "好运转动中…";
 
       const prizeCount = state.prizes.length;
@@ -444,13 +450,13 @@
         }
 
         currentRotation = desiredMod;
-        completeDraw(selectedIndex);
+        completeDraw(selectedIndex, drawResult.record);
       }
 
       spinFrame = requestAnimationFrame(animate);
     }
 
-    function completeDraw(selectedIndex) {
+    function completeDraw(selectedIndex, record) {
       const prize = state.prizes[selectedIndex];
       if (!prize) {
         spinning = false;
@@ -458,42 +464,53 @@
         return;
       }
 
-      if (state.mode === "stock") prize.stock = Math.max(0, prize.stock - 1);
-      state.drawCount += 1;
-      const createdAt = Date.now();
-      state.history.unshift({
-        id: uid(),
-        prizeId: prize.id,
-        name: displayName(prize),
-        emoji: prize.emoji,
-        image: prize.image,
-        createdAt,
-        drawNo: state.drawCount,
-        mode: state.mode,
-        weight: prize.weight,
-        stockAfter: prize.stock,
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "",
-        synced: false,
-      });
+      const normalizedRecord = normalizeHistoryItem(record || {});
+      state.drawCount = Math.max(state.drawCount, normalizedRecord.drawNo);
+      state.historyCount = state.drawCount;
+      state.history.unshift(normalizedRecord);
       state.history = state.history.slice(0, MAX_HISTORY);
       highlightedPrize = selectedIndex;
       spinning = false;
       frame.classList.remove("spinning");
       drawButton.disabled = false;
       drawButton.textContent = "立即抽奖";
-      saveState({ quiet: true });
       updateDrawControls();
       renderHistory();
       drawWheel(context, Math.floor(canvas.clientWidth));
       openResult(prize);
       if (!isMiss(prize)) launchConfetti();
-      void syncPendingHistory();
     }
 
     updateDrawControls();
     renderHistory();
     resizeWheel();
-    void syncPendingHistory();
+    drawButton.disabled = true;
+    drawButton.textContent = "载入奖池…";
+    void loadPublicLotteryState();
+
+    async function loadPublicLotteryState({ announce = true } = {}) {
+      try {
+        const response = await fetch("/api/config", {
+          headers: { Accept: "application/json" },
+          cache: "no-store",
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        applyRemoteState(await response.json());
+        configLoaded = true;
+        updateDrawControls();
+        renderHistory();
+        resizeWheel();
+        drawButton.disabled = false;
+        drawButton.textContent = "立即抽奖";
+        if (announce) showToast("D1 奖池已载入");
+      } catch (error) {
+        console.error(error);
+        configLoaded = false;
+        drawButton.disabled = true;
+        drawButton.textContent = "奖池载入失败";
+        showToast("无法读取 D1 奖池，请刷新页面重试");
+      }
+    }
   }
 
   function drawWheel(context, size) {
@@ -697,20 +714,19 @@
 
   function configTemplate() {
     return `
-      <main class="config-view route-enter">
-        <section class="config-hero">
+      <section class="admin-config-section route-enter">
+        <div class="surface admin-config-intro">
           <div>
-            <p class="config-kicker">LUCKY DRAW CONTROL</p>
-            <h1>抽奖配置</h1>
-            <p class="lead">在这里统一设置奖品名称、图片、权重与库存。所有修改都会自动保存，并实时同步到抽奖页面。</p>
-            <span class="save-state" id="saveState">本地数据已载入</span>
+            <p class="admin-config-kicker">PRIZE &amp; PROBABILITY</p>
+            <h2>抽奖配置</h2>
+            <p>设置奖品名称、图片、权重与库存。点击保存后写入 Cloudflare D1，并立即供所有抽奖设备使用。</p>
           </div>
-          <div class="config-actions">
-            <a class="btn btn-outline" href="${routeHref("draw")}" data-route="draw">← 返回抽奖</a>
-            <a class="btn btn-outline" href="${adminHref()}">管理后台</a>
-            <button class="btn btn-gold" id="saveAndReturn" type="button">保存并返回</button>
+          <div class="admin-config-actions">
+            <span class="save-state" id="saveState">正在读取 D1…</span>
+            <button class="btn btn-green" id="saveConfig" type="button">保存到 D1</button>
+            <button class="btn btn-gold" id="saveAndReturn" type="button">保存并返回抽奖</button>
           </div>
-        </section>
+        </div>
 
         <div class="config-grid">
           <section class="surface" aria-labelledby="prizeSettingsTitle">
@@ -760,19 +776,19 @@
                 </div>
               </div>
               <dl class="summary-list">
-                <dt>当前模式</dt><dd id="summaryMode">—</dd>
+                <dt>抽奖模式</dt><dd id="summaryMode">前台可切换</dd>
                 <dt>奖品数量</dt><dd id="summaryPrizeCount">—</dd>
                 <dt>有效奖品</dt><dd id="summaryActiveCount">—</dd>
                 <dt>剩余库存</dt><dd id="summaryStock">—</dd>
-                <dt>历史记录</dt><dd id="summaryHistory">—</dd>
+                <dt>累计抽奖</dt><dd id="summaryHistory">—</dd>
               </dl>
             </section>
           </aside>
         </div>
-      </main>`;
+      </section>`;
   }
 
-  function initConfigView() {
+  function initConfigView({ onSaveAndReturn } = {}) {
     renderPrizeEditor();
     refreshConfigComputed();
 
@@ -794,7 +810,7 @@
           state.mode === "stock" && prize.stock <= 0
         );
       }
-      saveState();
+      markConfigDirty();
       refreshConfigComputed();
     });
 
@@ -819,7 +835,7 @@
         stock: 5,
         initialStock: 5,
       });
-      saveState();
+      markConfigDirty();
       renderPrizeEditor();
       refreshConfigComputed();
       document.querySelector("#prizeList .prize-row:last-child .name-field")?.focus();
@@ -829,18 +845,92 @@
       state.prizes.forEach((prize) => {
         prize.stock = prize.initialStock;
       });
-      saveState();
+      markConfigDirty();
       renderPrizeEditor();
       refreshConfigComputed();
       showToast("库存已恢复为配置值");
     });
 
     document.querySelector("#runSimulation").addEventListener("click", runSimulation);
-    document.querySelector("#saveAndReturn").addEventListener("click", () => {
-      saveState();
-      showToast("配置已保存，正在返回抽奖");
-      setTimeout(() => navigate("draw"), 260);
+    document.querySelector("#saveConfig").addEventListener("click", () => {
+      void saveAdminConfig();
     });
+    document.querySelector("#saveAndReturn").addEventListener("click", async () => {
+      if (await saveAdminConfig()) {
+        showToast("配置已保存，正在返回抽奖");
+        setTimeout(() => {
+          if (typeof onSaveAndReturn === "function") onSaveAndReturn();
+          else navigate("draw");
+        }, 260);
+      }
+    });
+  }
+
+  function markConfigDirty() {
+    configDirty = true;
+    setConfigStatus("有未保存的修改");
+  }
+
+  function setConfigStatus(message) {
+    const indicator = document.querySelector("#saveState");
+    if (indicator) indicator.textContent = message;
+  }
+
+  function setConfigSaving(saving) {
+    configSaving = saving;
+    document.querySelectorAll("#saveConfig, #saveAndReturn").forEach((button) => {
+      button.disabled = saving;
+    });
+  }
+
+  async function saveAdminConfig() {
+    if (configSaving) return false;
+    if (state.prizes.some((prize) => !prize.name.trim())) {
+      showToast("请填写所有奖品名称");
+      return false;
+    }
+
+    setConfigSaving(true);
+    setConfigStatus("正在保存到 D1…");
+    try {
+      const response = await fetch("/api/admin/config", {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify({
+          revision: state.revision,
+          prizes: state.prizes,
+        }),
+      });
+      if (response.status === 401) {
+        location.reload();
+        return false;
+      }
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      applyRemoteState(data);
+      configDirty = false;
+      renderPrizeEditor();
+      refreshConfigComputed();
+      const time = new Date().toLocaleTimeString("zh-CN", {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+      });
+      setConfigStatus(`已保存至 D1 · ${time}`);
+      showToast("抽奖配置已保存到 D1");
+      return true;
+    } catch (error) {
+      console.error(error);
+      setConfigStatus("保存失败，请重试");
+      showToast("无法保存 D1 配置");
+      return false;
+    } finally {
+      setConfigSaving(false);
+    }
   }
 
   function renderPrizeEditor() {
@@ -893,11 +983,11 @@
           : "—";
     });
 
-    setText("#summaryMode", state.mode === "stock" ? "库存模式" : "无限模式");
+    setText("#summaryMode", "前台可切换");
     setText("#summaryPrizeCount", `${state.prizes.length} 项`);
     setText("#summaryActiveCount", `${pool.length} 项`);
     setText("#summaryStock", `${stock} 份`);
-    setText("#summaryHistory", `${state.history.length} 条`);
+    setText("#summaryHistory", `${state.historyCount.toLocaleString("zh-CN")} 次`);
   }
 
   function setText(selector, value) {
@@ -911,7 +1001,7 @@
       return;
     }
     state.prizes = state.prizes.filter((prize) => prize.id !== id);
-    saveState();
+    markConfigDirty();
     renderPrizeEditor();
     refreshConfigComputed();
   }
@@ -933,15 +1023,11 @@
         }
         try {
           const resized = await resizeImage(file);
-          const previous = prize.image;
           prize.image = resized;
-          if (!saveState()) {
-            prize.image = previous;
-            return;
-          }
+          markConfigDirty();
           renderPrizeEditor();
           refreshConfigComputed();
-          showToast("奖品图片已更新");
+          showToast("奖品图片已更新，请保存到 D1");
         } catch {
           showToast("图片读取失败，请换一张图片重试");
         }
@@ -1016,58 +1102,6 @@
     });
   }
 
-  async function syncPendingHistory() {
-    if (syncingRecords || !navigator.onLine) return;
-    const pending = state.history.filter((item) => !item.synced);
-    if (!pending.length) return;
-    syncingRecords = true;
-
-    try {
-      for (const record of pending) {
-        const response = await fetch("/api/draws", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Accept: "application/json",
-          },
-          body: JSON.stringify({
-            id: record.id,
-            prizeId: record.prizeId || null,
-            prizeName: record.name,
-            prizeEmoji: record.emoji || "🎁",
-            mode: record.mode,
-            drawNo: record.drawNo,
-            weight: record.weight,
-            stockAfter: record.stockAfter,
-            drawnAt: record.createdAt,
-            timezone: record.timezone || "",
-          }),
-        });
-        if (!response.ok) break;
-        const current = state.history.find((item) => item.id === record.id);
-        if (current) current.synced = true;
-      }
-      saveState({ quiet: true });
-      renderHistory();
-    } catch {
-      // Keep unsynced records in localStorage; the online event retries later.
-    } finally {
-      syncingRecords = false;
-    }
-  }
-
-  function markSaved() {
-    const indicator = document.querySelector("#saveState");
-    if (!indicator) return;
-    const time = new Date().toLocaleTimeString("zh-CN", {
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-      hour12: false,
-    });
-    indicator.textContent = `已自动保存 · ${time}`;
-  }
-
   function showToast(message) {
     const toast = document.querySelector("#toast");
     if (!toast) return;
@@ -1122,16 +1156,62 @@
     confettiFrame = requestAnimationFrame(animate);
   }
 
-  addEventListener("popstate", renderRoute);
-  addEventListener("online", () => {
-    void syncPendingHistory();
-  });
-  addEventListener("storage", (event) => {
-    if (event.key !== STORAGE_KEY || spinning) return;
-    state = loadState();
-    renderRoute();
-    showToast("配置已从其他页面同步");
+  function mountAdminConfig(root) {
+    if (!root) return false;
+    state = createDefaultState();
+    root.innerHTML = configTemplate();
+    root.querySelectorAll("button, input, select").forEach((control) => {
+      control.disabled = true;
+    });
+    void loadAdminConfig(root);
+    return true;
+  }
+
+  async function loadAdminConfig(root) {
+    try {
+      const response = await fetch("/api/admin/config", {
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      });
+      if (response.status === 401) {
+        location.reload();
+        return;
+      }
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      applyRemoteState(await response.json());
+      configDirty = false;
+      initConfigView({
+        onSaveAndReturn: () => {
+          location.href = routeHref("draw");
+        },
+      });
+      root.querySelectorAll("button, input, select").forEach((control) => {
+        control.disabled = false;
+      });
+      const time = state.updatedAt
+        ? new Date(state.updatedAt).toLocaleString("zh-CN", { hour12: false })
+        : "刚刚";
+      setConfigStatus(`已从 D1 载入 · ${time}`);
+    } catch (error) {
+      console.error(error);
+      setConfigStatus("D1 配置载入失败，请刷新页面重试");
+      showToast("无法读取 D1 抽奖配置");
+      root.querySelector(".admin-config-section")?.classList.add("has-error");
+    }
+  }
+
+  globalThis.WeilihuaLotteryConfig = Object.freeze({
+    mount: mountAdminConfig,
   });
 
-  renderRoute();
+  if (app) {
+    addEventListener("popstate", renderRoute);
+  }
+  addEventListener("beforeunload", (event) => {
+    if (!configDirty) return;
+    event.preventDefault();
+    event.returnValue = "";
+  });
+
+  if (app) renderRoute();
 })();

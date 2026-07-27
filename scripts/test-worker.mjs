@@ -106,14 +106,21 @@ const root = await request("/");
 assert.equal(root.status, 200);
 assert.match(root.headers.get("content-security-policy"), /default-src 'self'/);
 
-const config = await request("/config");
-assert.equal(config.status, 200);
-
 const unauthorized = await request("/admin");
 assert.equal(unauthorized.status, 401);
 assert.match(unauthorized.headers.get("www-authenticate"), /^Basic /);
 
 const authorization = `Basic ${Buffer.from("admin:test-password").toString("base64")}`;
+const protectedConfig = await request("/config");
+assert.equal(protectedConfig.status, 401);
+
+const configRedirect = await request("/config", {
+  headers: { Authorization: authorization },
+  redirect: "manual",
+});
+assert.equal(configRedirect.status, 302);
+assert.equal(configRedirect.headers.get("location"), "/admin#config");
+
 const authorizedAdmin = await request("/admin", {
   headers: { Authorization: authorization },
 });

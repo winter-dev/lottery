@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#007F3E">
   <meta name="robots" content="noindex,nofollow">
-  <meta name="description" content="威利华木抽奖记录管理后台">
-  <title>抽奖记录管理 · 威利华木</title>
+  <meta name="description" content="威利华木抽奖配置与记录管理后台">
+  <title>抽奖管理后台 · 威利华木</title>
   <link rel="stylesheet" href="/assets/app.css">
 </head>
 <body>
@@ -19,94 +19,111 @@
           <span>WEILIHUAMU</span>
         </span>
       </a>
-      <div class="header-note"><b>ADMIN CENTER</b>抽奖记录管理后台</div>
+      <div class="header-note"><b>ADMIN CENTER</b>抽奖配置与记录管理</div>
     </header>
 
     <main class="admin-view route-enter">
       <section class="admin-hero">
         <div>
-          <p class="config-kicker">CLOUDFLARE D1 RECORDS</p>
-          <h1>抽奖记录管理</h1>
-          <p>记录由 Cloudflare D1 持久化保存，可按奖品、模式和日期筛选。</p>
+          <p class="config-kicker">LUCKY DRAW ADMIN</p>
+          <h1>抽奖管理后台</h1>
+          <p>统一管理奖品、权重、库存和中奖记录。此页面受 HTTP Basic Authentication 保护。</p>
         </div>
         <div class="admin-hero-actions">
           <a class="btn btn-outline" href="/">← 返回抽奖</a>
-          <button class="btn btn-gold" id="refreshRecords" type="button">刷新数据</button>
         </div>
       </section>
 
-      <section class="admin-stats" aria-label="抽奖数据概览">
-        <article class="stat-card">
-          <span>累计抽奖</span><strong id="statTotal">—</strong><small>全部记录</small>
-        </article>
-        <article class="stat-card">
-          <span>今日抽奖</span><strong id="statToday">—</strong><small>北京时间</small>
-        </article>
-        <article class="stat-card">
-          <span>奖品种类</span><strong id="statPrizes">—</strong><small>历史去重</small>
-        </article>
-        <article class="stat-card">
-          <span>库存模式</span><strong id="statStock">—</strong><small>抽奖次数</small>
-        </article>
+      <nav class="admin-tabs" aria-label="管理后台功能">
+        <button type="button" data-admin-tab="config" aria-controls="adminConfigPanel">
+          <span aria-hidden="true">⚙</span> 抽奖配置
+        </button>
+        <button type="button" data-admin-tab="records" aria-controls="adminRecordsPanel">
+          <span aria-hidden="true">▦</span> 抽奖记录
+        </button>
+      </nav>
+
+      <section class="admin-panel" id="adminConfigPanel" data-admin-panel="config">
+        <div id="configMount"></div>
       </section>
 
-      <section class="surface admin-records" aria-labelledby="recordsTitle">
-        <div class="surface-head admin-records-head">
-          <div>
-            <h2 id="recordsTitle">记录明细</h2>
-            <p id="recordsMeta">正在载入 D1 数据…</p>
+      <section class="admin-panel" id="adminRecordsPanel" data-admin-panel="records" hidden>
+        <section class="admin-stats" aria-label="抽奖数据概览">
+          <article class="stat-card">
+            <span>累计抽奖</span><strong id="statTotal">—</strong><small>全部记录</small>
+          </article>
+          <article class="stat-card">
+            <span>今日抽奖</span><strong id="statToday">—</strong><small>北京时间</small>
+          </article>
+          <article class="stat-card">
+            <span>奖品种类</span><strong id="statPrizes">—</strong><small>历史去重</small>
+          </article>
+          <article class="stat-card">
+            <span>库存模式</span><strong id="statStock">—</strong><small>抽奖次数</small>
+          </article>
+        </section>
+
+        <section class="surface admin-records" aria-labelledby="recordsTitle">
+          <div class="surface-head admin-records-head">
+            <div>
+              <h2 id="recordsTitle">记录明细</h2>
+              <p id="recordsMeta">切换至本页后读取 Cloudflare D1 数据</p>
+            </div>
+            <div class="admin-record-actions">
+              <button class="btn btn-outline" id="exportCsv" type="button">导出当前页 CSV</button>
+              <button class="btn btn-gold" id="refreshRecords" type="button">刷新数据</button>
+            </div>
           </div>
-          <button class="btn btn-outline" id="exportCsv" type="button">导出当前页 CSV</button>
-        </div>
 
-        <form class="admin-filters" id="recordFilters">
-          <label>
-            <span>搜索奖品</span>
-            <input class="field" id="filterQuery" type="search" maxlength="40" placeholder="输入奖品名称">
-          </label>
-          <label>
-            <span>抽奖模式</span>
-            <select class="field" id="filterMode">
-              <option value="">全部模式</option>
-              <option value="infinite">无限模式</option>
-              <option value="stock">库存模式</option>
-            </select>
-          </label>
-          <label>
-            <span>开始日期</span>
-            <input class="field" id="filterFrom" type="date">
-          </label>
-          <label>
-            <span>结束日期</span>
-            <input class="field" id="filterTo" type="date">
-          </label>
-          <button class="btn btn-green" type="submit">查询</button>
-          <button class="btn btn-text" id="resetFilters" type="button">重置</button>
-        </form>
+          <form class="admin-filters" id="recordFilters">
+            <label>
+              <span>搜索奖品</span>
+              <input class="field" id="filterQuery" type="search" maxlength="40" placeholder="输入奖品名称">
+            </label>
+            <label>
+              <span>抽奖模式</span>
+              <select class="field" id="filterMode">
+                <option value="">全部模式</option>
+                <option value="infinite">无限模式</option>
+                <option value="stock">库存模式</option>
+              </select>
+            </label>
+            <label>
+              <span>开始日期</span>
+              <input class="field" id="filterFrom" type="date">
+            </label>
+            <label>
+              <span>结束日期</span>
+              <input class="field" id="filterTo" type="date">
+            </label>
+            <button class="btn btn-green" type="submit">查询</button>
+            <button class="btn btn-text" id="resetFilters" type="button">重置</button>
+          </form>
 
-        <div class="admin-table-wrap">
-          <table class="admin-table">
-            <thead>
-              <tr>
-                <th>奖品</th>
-                <th>模式</th>
-                <th>抽奖序号</th>
-                <th>权重</th>
-                <th>抽后库存</th>
-                <th>中奖时间</th>
-                <th>记录 ID</th>
-              </tr>
-            </thead>
-            <tbody id="recordRows"></tbody>
-          </table>
-          <div class="admin-empty" id="recordEmpty" hidden>当前筛选条件下没有抽奖记录</div>
-        </div>
+          <div class="admin-table-wrap">
+            <table class="admin-table">
+              <thead>
+                <tr>
+                  <th>奖品</th>
+                  <th>模式</th>
+                  <th>抽奖序号</th>
+                  <th>权重</th>
+                  <th>抽后库存</th>
+                  <th>中奖时间</th>
+                  <th>记录 ID</th>
+                </tr>
+              </thead>
+              <tbody id="recordRows"></tbody>
+            </table>
+            <div class="admin-empty" id="recordEmpty" hidden>当前筛选条件下没有抽奖记录</div>
+          </div>
 
-        <div class="admin-pagination">
-          <button class="btn btn-outline" id="previousPage" type="button">上一页</button>
-          <span id="pageInfo">第 1 页</span>
-          <button class="btn btn-outline" id="nextPage" type="button">下一页</button>
-        </div>
+          <div class="admin-pagination">
+            <button class="btn btn-outline" id="previousPage" type="button">上一页</button>
+            <span id="pageInfo">第 1 页</span>
+            <button class="btn btn-outline" id="nextPage" type="button">下一页</button>
+          </div>
+        </section>
       </section>
     </main>
 
@@ -114,6 +131,7 @@
   </div>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="/assets/app.js" defer></script>
   <script src="/assets/admin.js" defer></script>
 </body>
 </html>

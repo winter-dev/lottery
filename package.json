@@ -5,6 +5,12 @@
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",
+    "deploy": "npm run build && node -e \"require('node:fs').copyFileSync('dist/server/index.js', 'dist/server/_worker.js')\" && wrangler pages deploy dist/server --project-name weilihua-lucky-draw --branch main",
+    "db:migrate:local": "wrangler d1 migrations apply weili-lucky-local --local --persist-to .wrangler/state",
+    "dev": "node scripts/build.mjs && wrangler dev --local --persist-to .wrangler/state",
     "test": "node scripts/build.mjs && node scripts/test-worker.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "^4.92.0"
   }
 }

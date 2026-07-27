@@ -1,6 +1,14 @@
 dist/
+node_modules/
+.wrangler/
 .sites/
 .openai/*.tar.gz
 .env*
 .dev.vars*
 !.env.example
+!.dev.vars.example
+.wrangler
+.sites
+.openai
+.pnpm-store
+pnpm-lock.yaml

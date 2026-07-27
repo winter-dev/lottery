@@ -1,6 +1,6 @@
 /**
- * D1 schema contract for draw records.
- * The executable migration lives in drizzle/0000_create_draw_records.sql.
+ * D1 schema contracts.
+ * Executable migrations live in drizzle/*.sql.
  */
 export type DrawRecord = {
   id: string;
@@ -16,4 +16,24 @@ export type DrawRecord = {
   received_at: number;
 };
 
+export type LotterySettings = {
+  id: 1;
+  revision: number;
+  updated_at: number;
+};
+
+export type LotteryPrize = {
+  id: string;
+  sort_order: number;
+  name: string;
+  emoji: string;
+  image: string;
+  weight: number;
+  stock: number;
+  initial_stock: number;
+  updated_at: number;
+};
+
 export const drawRecordsTable = "draw_records" as const;
+export const lotterySettingsTable = "lottery_settings" as const;
+export const lotteryPrizesTable = "lottery_prizes" as const;
