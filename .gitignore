@@ -1,0 +1,6 @@
+dist/
+.sites/
+.openai/*.tar.gz
+.env*
+.dev.vars*
+!.env.example
