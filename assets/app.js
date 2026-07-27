@@ -554,7 +554,9 @@
       const x = radius + Math.cos(mid) * textRadius;
       const y = radius + Math.sin(mid) * textRadius;
       const sold = state.mode === "stock" && prize.stock <= 0;
-      const iconSize = Math.max(20, Math.min(size * 0.068, 55));
+      const iconScale = count > 10 ? 0.078 : count > 8 ? 0.09 : 0.112;
+      const iconLimit = count > 10 ? 62 : count > 8 ? 76 : 96;
+      const iconSize = Math.max(28, Math.min(size * iconScale, iconLimit));
       const image = prize.image ? cachedImage(prize.image) : null;
 
       context.save();
